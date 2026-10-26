@@ -382,7 +382,7 @@ def teste_o_caminho_nao_viaja_em_get():
                not re.search(r"\b(pasta|caminho|dir|path|sdir)\b", args),
                args.strip()[:60])
     checar(u"e a lista de séries é POST",
-           '@app.post("/api/elastic/series")' in tela)
+           '@app.post("/api/elastic/assentar")' in tela)
     checar(u"e a fusão também",
            '@app.post("/api/elastic/fundir")' in tela)
     checar(u"o id da tarefa é sorteado", "os.urandom" in tela)
@@ -741,28 +741,61 @@ def _get(app, rota, **kw):
     return json.loads(bytes(r.body).decode("utf-8"))
 
 
-def _esperar_busca(app, d, teto_s=60.0):
-    import time as _time
-    fim = _time.time() + teto_s
-    while d.get("buscando") and _time.time() < fim:
-        _time.sleep(0.05)
-        d = _get(app, u"/api/elastic/varredura", v=d.get("v") or u"")
+def _varrer(pasta, **kw):
+    import radai_elastic_screen as T
+    import radai_varrer
+    d = radai_varrer.iniciar(T.USO_DA_VARREDURA, pasta, dias=0,
+                             opcoes=T.opcoes_da_varredura(),
+                             em_segundo_plano=False, **kw)
     return d
 
 
-def teste_a_varredura_e_a_da_suite():
-    secao(u"a varredura é a da Suite, pasta a pasta, sem ler nada duas vezes")
-    import radai_dicom
+def _assentar(app, pasta, acumular=False, v=None):
+    if v is None:
+        v = _varrer(pasta).get("v") or u""
+    return _post(app, u"/api/elastic/assentar",
+                 {"v": v, "pasta": pasta, "acumular": acumular})
+
+
+MOTOR_PROPRIO = (u"radai_dicom.buscar_series(", u'"/api/elastic/series"',
+                 u'"/api/elastic/varredura"', u'"/api/elastic/parar_busca"',
+                 u"def nova_varredura", u"def varrer_pasta")
+
+
+def _motor_proprio(texto):
+    return [m for m in MOTOR_PROPRIO if m in texto]
+
+
+def teste_a_varredura_e_a_da_casca():
+    secao(u"a busca da pasta é a varredura da casca, com o filtro "
+          u"de data e a estrela")
     import radai_elastic_screen as T
+    import radai_varrer
 
     tela = sem_docstring(fonte("radai_elastic_screen.py"))
-    checar(u"a tela não usa mais a varredura do Rodar agora",
+    checar(u"o motor próprio de busca saiu (rotas, thread e buscar_series)",
+           not _motor_proprio(tela), str(_motor_proprio(tela)))
+    checar(u"  (isca) com o buscar_series de volta, é acusado",
+           _motor_proprio(tela + u"\nradai_dicom.buscar_series(x)"))
+    checar(u"a tela não usa a varredura do Rodar agora",
            "radai_batch" not in tela, u"radai_batch no fonte")
-    checar(u"e busca pela varredura da Suite (`radai_dicom.buscar_series`)",
-           "radai_dicom.buscar_series(" in tela)
-    checar(u"o caminho longo é o da Suite, e não uma cópia",
-           "def caminho_longo" not in tela
-           and "radai_dicom.caminho_longo(" in tela)
+    js = T.JS
+    checar(u"o JS pede a lista que cresce da casca (uiVarrerLista), com o uso "
+           u"«series»", u"window.uiVarrerLista(" in js
+           and T.USO_DA_VARREDURA == u"series" and u"@USO_JS@" in js)
+    checar(u"  com as modalidades e o mínimo de cortes desta tela",
+           T.opcoes_da_varredura() == {"modalidades": [u"CT", u"MR", u"PT"],
+                                       "min_cortes": 8} and u"@OPCOES_JS@" in js)
+    checar(u"  com o filtro de data e a pasta do campo",
+           u"dias: 'el_dias'" in js and u"pasta: pasta" in js)
+    p = T.pagina()
+    checar(u"o popup tem o filtro de data (Pastas dos últimos) com o id que o JS lê",
+           u'data-ui-dias' in p and u'id="el_dias"' in p
+           and u"Pastas dos últimos" in p)
+    checar(u"  e a estrela da pasta favorita ao lado do campo",
+           u'data-ui-fav="el-pasta"' in p)
+    checar(u"  e o «Mapear» vem do explorador da casca, aberto pelo Procurar…",
+           u"window.uiExplorador(" in js)
 
     base = _tempfile.mkdtemp(prefix="radai_ac_elastic_")
     U = dict((k, u"9.9.9.222222222.%d" % k) for k in range(1, 8))
@@ -776,116 +809,53 @@ def teste_a_varredura_e_a_da_suite():
     misto = os.path.join(base, "PAC", "MISTO")
     gravar_serie(misto, U[6], n=10)
     gravar_serie(os.path.join(misto, "SUB"), U[7], n=10)
-    with open(os.path.join(base, "DICOMDIR"), "wb") as f:
-        f.write(b"\0" * 128 + b"DICM" + b"\0" * 64)
     with open(os.path.join(base, "PAC", "estudo.zip"), "wb") as f:
         f.write(b"PK\x05\x06" + b"\0" * 18)
-    with open(os.path.join(base, "leiame.txt"), "w") as f:
-        f.write(u"texto")
 
-    lidas = []
-    original = radai_dicom.varrer_pasta
-
-    def espiao(pasta, *a, **k):
-        lidas.append(os.path.normcase(radai_dicom.sem_prefixo(pasta)))
-        return original(pasta, *a, **k)
-
-    radai_dicom.varrer_pasta = espiao
-    try:
-        v = T.nova_varredura(base, False)
-        T.varrer_pasta(v)
-    finally:
-        radai_dicom.varrer_pasta = original
-    achadas = dict((a["uid"], a) for a in T.achadas(v))
+    d = radai_varrer.estado(_varrer(base).get("v"))
+    linhas = d.get("linhas") or []
+    uids = set(l.get("uid") for l in linhas)
     checar(u"a TC e a RM da subpasta funda são achadas",
-           U[1] in achadas and U[2] in achadas, str(sorted(achadas)))
+           U[1] in uids and U[2] in uids, str(len(uids)))
     checar(u"a série de 3 cortes fica de fora (mínimo de %d)" % T.MIN_CORTES,
-           U[3] not in achadas)
+           U[3] not in uids)
     checar(u"a estrutura (RTSTRUCT) não é série de imagem para fundir",
-           U[4] not in achadas)
-    checar(u"a pasta _RadAI é pulada, como na Suite", U[5] not in achadas)
+           U[4] not in uids)
+    checar(u"a pasta _RadAI é pulada, como na Suite", U[5] not in uids)
     checar(u"a pasta com arquivos E subpasta dá as duas séries",
-           U[6] in achadas and U[7] in achadas)
-    checar(u"cada pasta vai uma vez só à varredura da Suite",
-           len(lidas) == len(set(lidas)), str(len(lidas)))
-    checar(u"  e a pasta mista e a subpasta dela são lidas, cada uma sozinha",
-           os.path.normcase(misto) in lidas
-           and os.path.normcase(os.path.join(misto, "SUB")) in lidas)
-    checar(u"cada arquivo é lido uma vez (12+9+3+10+10+10 da série, "
-           u"o DICOMDIR, o .zip e o texto)",
-           v["arquivos"] == 57, str(v["arquivos"]))
-    checar(u"a série achada guarda a pasta dos cortes e a data",
-           achadas.get(U[1], {}).get("cortes") == 12
-           and achadas.get(U[1], {}).get("date") == u"20240115"
-           and os.path.basename(achadas.get(U[1], {}).get("pasta", u""))
-           == u"TC", str(achadas.get(U[1]))[:140])
-    checar(u"e o número e a espessura medidos pela Suite",
-           achadas.get(U[1], {}).get("numero") == 3
-           and abs(float(achadas.get(U[1], {}).get("espessura_mm") or 0)
-                   - 2.5) < 1e-6, str(achadas.get(U[1]))[:140])
-    checar(u"o progresso conta pastas e arquivos",
-           v["pastas"] >= 8 and v["arquivos"] >= 40,
-           u"%d pastas · %d arquivos" % (v["pastas"], v["arquivos"]))
-    checar(u"o .zip é contado, e não aberto", v["zips"] == 1, str(v["zips"]))
-    av = T.avisos_da_varredura(v)
-    checar(u"e o aviso diz que a busca não abre .zip",
-           any(u".zip" in a for a in av), u" | ".join(av)[:120])
-
-    vistos = []
-
-    def parar_no_meio():
-        vistos.append(1)
-        if len(vistos) >= 15:
-            v3["parado"] = True
-
-    v3 = T.nova_varredura(base, False)
-    radai_dicom.varrer_pasta = (
-        lambda pasta, parar=None, ao_ler=None, nomes=None: original(
-            pasta, parar, (lambda: (ao_ler and ao_ler(), parar_no_meio())),
-            nomes))
-    try:
-        T.varrer_pasta(v3)
-    finally:
-        radai_dicom.varrer_pasta = original
-    checar(u"a parada vale no meio da pasta, e não só entre pastas",
-           v3["parado"] and v3["arquivos"] == 15,
-           u"parado=%s · %d arquivos" % (v3["parado"], v3["arquivos"]))
-
-    if os.name == "nt":
-        fundo = radai_dicom.caminho_longo(base)
-        for k in range(9):
-            fundo = os.path.join(fundo, u"subpasta_comprida_%02d_%s" % (k, u"x" * 18))
-        checar(u"a pasta funda do fantoma passa de 260 caracteres",
-               len(fundo) > 300, str(len(fundo)))
-        U8 = u"9.9.9.222222222.8"
-        primeira = os.path.join(radai_dicom.caminho_longo(base),
-                                u"subpasta_comprida_00_%s" % (u"x" * 18))
-        try:
-            gravar_serie(fundo, U8, n=8)
-            v2 = T.nova_varredura(base, False)
-            T.varrer_pasta(v2)
-            checar(u"e a série lá no fundo é achada",
-                   U8 in [a["uid"] for a in T.achadas(v2)],
-                   u"%d achadas" % len(T.achadas(v2)))
-        finally:
-            import shutil
-            shutil.rmtree(primeira, ignore_errors=True)
+           U[6] in uids and U[7] in uids)
+    checar(u"cada linha leva o bilhete, e a pasta não vai à tela",
+           linhas and all(l.get("bilhete") for l in linhas)
+           and not any("pasta" in l for l in linhas))
+    checar(u"o aviso diz que a busca não abre .zip",
+           any(u".zip" in a for a in d.get("avisos") or ()),
+           u" | ".join(d.get("avisos") or ())[:120])
+    sem_piso = radai_varrer.iniciar(T.USO_DA_VARREDURA, base, dias=0,
+                                    opcoes={"modalidades": [u"CT", u"MR", u"PT"]},
+                                    em_segundo_plano=False)
+    uids_sem = set(l.get("uid") for l in
+                   radai_varrer.estado(sem_piso.get("v")).get("linhas") or ())
+    checar(u"  (isca) sem o mínimo de cortes da tela, a série de 3 cortes entraria",
+           U[3] in uids_sem)
 
 
-def teste_as_rotas_de_pasta_executam():
-    secao(u"as rotas de pasta EXECUTAM, como trabalho que a tela consulta")
+def teste_a_rota_de_assentar_executa():
+    secao(u"a lista de pastas assenta a varredura da casca, e soma ou substitui")
     import json
-    import radai_config
     import radai_elastic_screen as T
+    import radai_varrer
 
     app = AppFalso()
     T.montar(app)
-    checar(u"`montar` registrou as rotas da busca",
-           (u"POST", u"/api/elastic/series") in app.rotas
-           and (u"GET", u"/api/elastic/varredura") in app.rotas
-           and (u"POST", u"/api/elastic/parar_busca") in app.rotas
+    checar(u"`montar` registrou assentar, a lista e tirar pasta",
+           (u"POST", u"/api/elastic/assentar") in app.rotas
+           and (u"GET", u"/api/elastic/lista") in app.rotas
            and (u"POST", u"/api/elastic/remover_pasta") in app.rotas,
            str(sorted(c for _m, c in app.rotas)))
+    checar(u"  e nenhuma rota do motor antigo de busca",
+           not [c for _m, c in app.rotas if c in (
+               u"/api/elastic/series", u"/api/elastic/varredura",
+               u"/api/elastic/parar_busca")])
 
     base = _tempfile.mkdtemp(prefix="radai_ac_elastic_")
     A = os.path.join(base, "TC")
@@ -895,171 +865,158 @@ def teste_as_rotas_de_pasta_executam():
     gravar_serie(A, UA, n=12)
     gravar_serie(B, UB, n=9, modalidade="MR")
 
-    root_real = radai_config.root_configurado
-    radai_config.root_configurado = lambda: u""
-    try:
-        d = _post(app, u"/api/elastic/series", {"pasta": A})
-        checar(u"o pedido volta na hora, com o número da busca",
-               bool(d.get("v")) and "buscando" in d, str(d)[:110])
-        d = _esperar_busca(app, d)
-        checar(u"a busca termina e devolve a série da pasta",
-               not d.get("buscando") and len(d.get("series") or []) == 1
-               and len(d.get("pastas") or []) == 1, str(d)[:140])
-        checar(u"e diz o que olhou",
-               d.get("pastas_olhadas", 0) >= 1 and d.get("arquivos", 0) >= 12
-               and d.get("series_achadas") == 1,
-               u"%s pastas · %s arquivos" % (d.get("pastas_olhadas"),
-                                            d.get("arquivos")))
+    d = _assentar(app, A)
+    checar(u"a varredura de A assentada traz a série e a pasta",
+           len(d.get("series") or []) == 1 and len(d.get("pastas") or []) == 1
+           and not d.get("erro"), str(d)[:140])
+    va = _varrer(A).get("v")
+    linha = (radai_varrer.estado(va).get("linhas") or [{}])[0]
+    d = _assentar(app, A, v=va)
+    checar(u"a série da lista guarda o MESMO bilhete da linha da varredura "
+           u"(a escolha feita antes do fim continua valendo)",
+           (d.get("series") or [{}])[0].get("b") == linha.get("bilhete"),
+           str(d.get("series"))[:90])
+    d = _assentar(app, B, acumular=True)
+    checar(u"«Adicionar outra pasta» SOMA", len(d["series"]) == 2,
+           u"%d séries" % len(d["series"]))
+    checar(u"e as duas pastas voltam na resposta, numeradas",
+           [(p["n"], p["pasta"]) for p in d["pastas"]] == [(1, A), (2, B)],
+           str([p["pasta"] for p in d["pastas"]]))
+    checar(u"e o UID não está na resposta da rota",
+           UA not in json.dumps(d) and UB not in json.dumps(d))
+    d = _get(app, u"/api/elastic/lista")
+    checar(u"reabrir a tela devolve a lista guardada, sem varrer de novo",
+           len(d.get("series") or []) == 2, str(d)[:110])
 
-        d = _esperar_busca(app, _post(app, u"/api/elastic/series",
-                                      {"pasta": B, "acumular": True}))
-        checar(u"a segunda pasta SOMA pela rota", len(d["series"]) == 2,
-               u"%d séries" % len(d["series"]))
-        checar(u"e as duas pastas voltam na resposta",
-               [p["pasta"] for p in d["pastas"]] == [A, B],
-               str([p["pasta"] for p in d["pastas"]]))
-        checar(u"e o UID não está na resposta da rota",
-               UA not in json.dumps(d) and UB not in json.dumps(d))
-        checar(u"nem o prefixo de caminho longo",
-               u"\\\\?\\" not in u"".join(p["pasta"] for p in d["pastas"]))
+    d = _assentar(app, B)
+    checar(u"«Procurar séries» SUBSTITUI a lista",
+           len(d["series"]) == 1 and len(d["pastas"]) == 1,
+           u"%d séries · %d pastas" % (len(d["series"]), len(d["pastas"])))
 
-        d = _get(app, u"/api/elastic/varredura", v=u"")
-        checar(u"reabrir a tela devolve a lista guardada, sem varrer de novo",
-               len(d.get("series") or []) == 2 and not d.get("buscando"),
-               str(d)[:110])
+    nada = os.path.join(base, "NAO_EXISTE")
+    d = _assentar(app, nada, acumular=True)
+    checar(u"pasta inexistente responde erro", bool(d.get("erro")),
+           str(d.get("erro"))[:70])
+    checar(u"e a lista ANTERIOR volta junto com o erro",
+           len(d.get("series") or []) == 1, str(d)[:110])
 
-        d = _esperar_busca(app, _post(app, u"/api/elastic/series",
-                                      {"pasta": B}))
-        checar(u"«Procurar séries» SUBSTITUI a lista",
-               len(d["series"]) == 1 and len(d["pastas"]) == 1,
-               u"%d séries · %d pastas" % (len(d["series"]),
-                                           len(d["pastas"])))
+    d = _assentar(app, B, acumular=True)
+    checar(u"a pasta repetida é recusada, com o número dela",
+           u"já está na lista" in (d.get("erro") or u""), str(d.get("erro"))[:80])
+    checar(u"e nada foi acrescentado", len(d["series"]) == 1,
+           u"%d séries" % len(d["series"]))
 
-        d = _esperar_busca(app, _post(
-            app, u"/api/elastic/series",
-            {"pasta": os.path.join(base, "NAO_EXISTE"), "acumular": True}))
-        checar(u"pasta inexistente responde erro", bool(d.get("erro")),
-               str(d.get("erro"))[:70])
-        checar(u"e a lista ANTERIOR volta junto com o erro",
-               len(d.get("series") or []) == 1, str(d)[:110])
+    d = _post(app, u"/api/elastic/assentar",
+              {"v": u"inexistente", "pasta": A, "acumular": True})
+    checar(u"busca desconhecida diz que o programa pode ter reiniciado",
+           u"reiniciado" in (d.get("erro") or u"") and len(d["series"]) == 1,
+           str(d.get("erro")))
+    d = _post(app, u"/api/elastic/assentar",
+              {"v": _varrer(A).get("v"), "pasta": u"  ", "acumular": True})
+    checar(u"sem pasta, diz para escolher a pasta",
+           d.get("erro") == T.ESCOLHA_A_PASTA, str(d.get("erro")))
 
-        d = _post(app, u"/api/elastic/series", {"pasta": B, "acumular": True})
-        checar(u"a pasta repetida é recusada, com o número dela",
-               u"já está na lista" in (d.get("erro") or u"")
-               and not d.get("v"), str(d.get("erro"))[:80])
-        checar(u"e nada foi acrescentado", len(d["series"]) == 1,
-               u"%d séries" % len(d["series"]))
+    radai_varrer.registrar_series_de_pasta(u"teste_elastic_outro_uso")
+    vo = radai_varrer.iniciar(u"teste_elastic_outro_uso", A, dias=0,
+                              em_segundo_plano=False).get("v")
+    d = _post(app, u"/api/elastic/assentar", {"v": vo, "pasta": A,
+                                              "acumular": True})
+    checar(u"varredura de outro uso (outra tela) não entra nesta lista",
+           bool(d.get("erro")) and len(d["series"]) == 1, str(d.get("erro")))
+    l, av, erro = T.assentar_varredura([], A, {"uso": u"series", "fim": False},
+                                       False, lambda b: (A, UA))
+    checar(u"varredura que ainda lê não é assentada pela metade",
+           erro == T.BUSCA_AINDA_LENDO and l == [], str(erro))
 
-        d = _esperar_busca(app, _post(app, u"/api/elastic/series",
-                                      {"pasta": A, "acumular": True}))
-        checar(u"volta a haver duas pastas", len(d["pastas"]) == 2)
-        d = _post(app, u"/api/elastic/remover_pasta", {"n": 1})
-        checar(u"tirar a pasta 1 pela rota leva a série dela",
-               len(d["series"]) == 1 and len(d["pastas"]) == 1
-               and d["pastas"][0]["pasta"] == A,
-               str(d["pastas"]))
-        checar(u"e a que sobrou é renumerada para [1]",
-               d["series"][0]["rotulo"].startswith(u"[1]"),
-               d["series"][0]["rotulo"][:22])
-        d = _post(app, u"/api/elastic/remover_pasta", {"n": 77})
-        checar(u"número que não existe não apaga nada, e diz",
-               len(d["series"]) == 1 and len(d.get("avisos") or []) == 1,
-               str(d.get("avisos"))[:80])
-
-        d = _post(app, u"/api/elastic/series", {"pasta": u""})
-        checar(u"campo vazio sem ROOT configurado diz como resolver",
-               u"Procurar" in (d.get("erro") or u"") and not d.get("v"),
-               str(d.get("erro"))[:80])
-        radai_config.root_configurado = lambda: A
-        d = _esperar_busca(app, _post(app, u"/api/elastic/series",
-                                      {"pasta": u""}))
-        checar(u"campo vazio varre o ROOT configurado",
-               len(d["series"]) == 1 and d["pastas"][0]["pasta"] == A,
-               str(d["pastas"])[:80])
-        d = _get(app, u"/api/elastic/varredura", v=u"inexistente")
-        checar(u"busca desconhecida diz que o programa pode ter reiniciado",
-               u"reiniciado" in (d.get("erro") or u""), str(d.get("erro")))
-    finally:
-        radai_config.root_configurado = root_real
+    d = _assentar(app, A, acumular=True)
+    checar(u"volta a haver duas pastas", len(d["pastas"]) == 2)
+    d = _post(app, u"/api/elastic/remover_pasta", {"n": 1})
+    checar(u"tirar a pasta 1 pela rota leva a série dela",
+           len(d["series"]) == 1 and len(d["pastas"]) == 1
+           and d["pastas"][0]["pasta"] == A, str(d["pastas"]))
+    checar(u"e a que sobrou é renumerada para [1]",
+           d["series"][0]["rotulo"].startswith(u"[1]"),
+           d["series"][0]["rotulo"][:22])
+    d = _post(app, u"/api/elastic/remover_pasta", {"n": 77})
+    checar(u"número que não existe não apaga nada, e diz",
+           len(d["series"]) == 1 and len(d.get("avisos") or []) == 1,
+           str(d.get("avisos"))[:80])
 
 
-def teste_a_busca_mostra_o_que_acha_e_para():
-    secao(u"a busca mostra cada série quando acha, e para quando pedem")
+def teste_a_busca_parada_guarda_o_que_achou():
+    secao(u"a lista cresce enquanto lê, e a busca parada guarda o que achou")
     import threading
     import time as _time
-    import radai_config
+    import radai_dicom
     import radai_elastic_screen as T
+    import radai_varrer
+
+    js = T.JS
+    linha = js.split(u"linha: function(s){")[1].split(u"},")[0] \
+        if u"linha: function(s){" in js else u""
+    checar(u"cada série achada vira um item clicável, por bilhete, antes do fim",
+           u"data-b=\"'" in linha and u"elEsc(s.bilhete)" in linha
+           and u"class=\"el-it\"" in linha)
+    checar(u"  e a lista nova responde ao clique como a guardada",
+           u"el('el-lista-nova').addEventListener('click', elListaClique)" in js)
+    rotulo = js.split(u"function elRotuloAchada(")[1].split(u"\n}\n")[0] \
+        if u"function elRotuloAchada(" in js else u""
+    import radai_phrases as F
+    chaves = set(F.normalizar(k) for k in F.construir()["en"])
+    checar(u"o rótulo da série achada tem o molde do rótulo guardado "
+           u"(o tradutor casa os dois)",
+           F.normalizar(u"[%d] série %s · %d cortes · %s · %s · …%s") in chaves
+           and all(t in rotulo for t in (u"'] série '", u"' cortes · '",
+                                         u"' · …'")))
+    checar(u"no fim, a varredura vai à lista pelo número dela, e só a do "
+           u"último pedido", u"elAssentar((d && d.v) || ''" in js
+           and u"pedido === elPedido" in js)
 
     base = _tempfile.mkdtemp(prefix="radai_ac_elastic_")
     U1, U2 = u"9.9.9.333333333.1", u"9.9.9.333333333.2"
     gravar_serie(os.path.join(base, "A"), U1, n=10)
     gravar_serie(os.path.join(base, "B"), U2, n=10)
-
     app = AppFalso()
     T.montar(app)
-    import radai_dicom
     solta = threading.Event()
-    lidas = []
     original = radai_dicom.varrer_pasta
 
     def devagar(pasta, *a, **k):
-        if os.path.basename(pasta) in (u"A", u"B"):
-            lidas.append(pasta)
         if os.path.basename(pasta) == u"B":
             solta.wait(20.0)
         return original(pasta, *a, **k)
 
-    root_real = radai_config.root_configurado
-    radai_config.root_configurado = lambda: u""
     radai_dicom.varrer_pasta = devagar
     try:
-        d = _post(app, u"/api/elastic/series", {"pasta": base})
-        v = d.get("v")
+        v = radai_varrer.iniciar(T.USO_DA_VARREDURA, base, dias=0,
+                                 opcoes=T.opcoes_da_varredura()).get("v")
         fim = _time.time() + 20.0
+        d = {}
         while _time.time() < fim:
-            d = _get(app, u"/api/elastic/varredura", v=v)
-            if len(d.get("series") or []) >= 1 and len(lidas) >= 2:
+            d = radai_varrer.estado(v)
+            if len(d.get("linhas") or []) >= 1:
                 break
             _time.sleep(0.05)
         checar(u"com a busca ainda rodando, a primeira série já aparece",
-               d.get("buscando") is True and len(d.get("series") or []) == 1,
-               u"buscando=%s séries=%d" % (d.get("buscando"),
-                                          len(d.get("series") or [])))
-        d = _post(app, u"/api/elastic/parar_busca", {"v": v})
-        checar(u"«Parar a busca» para na hora, sem esperar a pasta lenta",
-               d.get("buscando") is False, str(d.get("buscando")))
-        checar(u"e guarda o que já tinha achado",
-               len(d.get("series") or []) == 1, str(d)[:110])
-        checar(u"e avisa que a lista é parcial",
-               any(u"interrompida" in a for a in d.get("avisos") or ()),
-               str(d.get("avisos"))[:110])
+               not d.get("fim") and len(d.get("linhas") or []) == 1,
+               u"fim=%s linhas=%d" % (d.get("fim"), len(d.get("linhas") or [])))
+        radai_varrer.parar(v)
         solta.set()
-        _time.sleep(0.3)
-        d = _get(app, u"/api/elastic/varredura", v=v)
-        checar(u"o que a busca parada achou depois não entra na lista",
-               len(d.get("series") or []) == 1, str(d)[:110])
-
-        lidas[:] = []
-        solta.clear()
-        d1 = _post(app, u"/api/elastic/series", {"pasta": base})
         fim = _time.time() + 20.0
-        while len(lidas) < 2 and _time.time() < fim:
+        while not radai_varrer.estado(v).get("fim") and _time.time() < fim:
             _time.sleep(0.05)
-        radai_dicom.varrer_pasta = original
-        d2 = _esperar_busca(app, _post(app, u"/api/elastic/series",
-                                       {"pasta": base}))
-        solta.set()
-        checar(u"uma busca nova toma o lugar da que estava rodando",
-               d1.get("v") != d2.get("v") and not d2.get("buscando")
-               and len(d2.get("series") or []) == 2,
-               u"%d séries" % len(d2.get("series") or []))
-        velha = _get(app, u"/api/elastic/varredura", v=d1.get("v"))
-        checar(u"e a velha passa a ser desconhecida",
-               bool(velha.get("erro")), str(velha.get("erro"))[:60])
+        d = radai_varrer.estado(v)
+        checar(u"«Parar a leitura» para, e avisa que a lista é parcial",
+               d.get("fim") and any(u"interrompida" in a
+                                    for a in d.get("avisos") or ()),
+               str(d.get("avisos"))[:110])
+        r = _post(app, u"/api/elastic/assentar", {"v": v, "pasta": base})
+        checar(u"e a lista guarda o que já tinha achado",
+               len(r.get("series") or []) == len(d.get("linhas") or [])
+               and len(r.get("series") or []) >= 1, str(r)[:110])
     finally:
         solta.set()
         radai_dicom.varrer_pasta = original
-        radai_config.root_configurado = root_real
 
 
 def teste_o_ciclo_roda():
@@ -1509,7 +1466,6 @@ def teste_a_rota_da_fusao_executa():
     secao(u"a rota da fusão EXECUTA, do botão ao PNG")
     import json
     import time as _time
-    import radai_config
     import radai_elastic_screen as T
 
     def post(rota, corpo):
@@ -1529,12 +1485,10 @@ def teste_a_rota_da_fusao_executa():
         pedidas.append(s.get("uid"))
         return volumes[s.get("uid")]
 
-    root_real = radai_config.root_configurado
     carregar_real = T.carregar_serie
-    radai_config.root_configurado = lambda: u""
     T.carregar_serie = carregar_falso
     try:
-        d = _esperar_busca(app, post(u"/api/elastic/series", {"pasta": base}))
+        d = _assentar(app, base)
         bs = [s["b"] for s in d.get("series") or ()]
         checar(u"a lista traz as duas séries", len(bs) == 2, str(d)[:90])
         j = post(u"/api/elastic/fundir", {"fixa": bs[0], "movel": bs[1],
@@ -1606,7 +1560,6 @@ def teste_a_rota_da_fusao_executa():
             checar(u"achei a tarefa viva para tirar o laudo dela", False,
                    str(t_viva)[:60])
     finally:
-        radai_config.root_configurado = root_real
         T.carregar_serie = carregar_real
 
 
@@ -2024,7 +1977,7 @@ def teste_nenhum_pedido_espera_para_sempre():
            u"fetch(" in corpo and u"setTimeout" in corpo
            and u"abort()" in corpo and u"Promise.race" in corpo)
     checar(u"todo pedido da tela passa por ele",
-           js.count(u"elPedir(") >= 10, u"%d" % js.count(u"elPedir("))
+           js.count(u"elPedir(") >= 8, u"%d" % js.count(u"elPedir("))
     checar(u"ISCA: o erro cru do navegador não vai para a tela",
            u"String(e)" not in js)
     checar(u"a tela diz «O app não respondeu.» e oferece tentar de novo",
@@ -2032,21 +1985,22 @@ def teste_nenhum_pedido_espera_para_sempre():
            and u"Tentar de novo" in T.PAGINA and u"elDeNovo" in js)
     checar(u"a fusão é consultada em cadeia, sem pedido empilhado",
            u"setInterval" not in js and u"setTimeout(elPerguntar" in js)
-    checar(u"e a busca também", u"setTimeout(elBuscaSeguir" in js)
+    checar(u"e a busca da pasta é a da casca, que consulta em cadeia",
+           u"window.uiVarrerLista(" in js and u"setTimeout(elBusca" not in js)
     checar(u"uma falha solta não interrompe: a tela avisa depois de %s "
            u"seguidas" % u"EL_FALHAS_ATE_AVISAR",
            u"EL_FALHAS_ATE_AVISAR" in js
            and u"elFalhasFusao < EL_FALHAS_ATE_AVISAR" in js)
     pag = T.pagina()
-    checar(u"a busca mostra o progresso e tem «Parar a busca» (no popup da série)",
-           u'id="el-busca"' in pag and u"Parar a busca" in pag
-           and u"pastas olhadas" in pag
+    checar(u"a busca mostra o progresso e o «Parar a leitura» da casca (no popup da série)",
+           u'class="ui-vl-est" id="el-busca"' in pag
+           and u"estado: 'el-busca'" in js
            and pag.index(u'id="el_escolha"') < pag.index(u'id="el-busca"'))
-    checar(u"e quem pede movimento reduzido vê a barra parada",
-           u"prefers-reduced-motion" in T.CSS)
-    checar(u"reabrir a tela retoma a busca ou a lista, sem varrer de novo",
+    checar(u"e nenhum movimento próprio: o da casca respeita o movimento reduzido",
+           u"@keyframes" not in T.CSS and u"animation" not in T.CSS)
+    checar(u"reabrir a tela retoma a lista guardada, sem varrer de novo",
            u"function elRetomar" in js
-           and u"/api/elastic/varredura?v=" in js)
+           and u"elPedir('/api/elastic/lista')" in js)
 
 
 def teste_o_visor_brilha_enquanto_funde():
@@ -2081,10 +2035,10 @@ def teste_o_campo_obrigatorio_treme_e_a_caixa_e_da_casca():
            u"scrollIntoView" in tremer and u"focus()" in tremer
            and u"treme" not in T.CSS)
     varrer = corpo(u"elVarrer")
-    checar(u"«Adicionar outra pasta» sem pasta treme o campo da pasta",
-           u"elTremer('el-pasta')" in varrer
+    checar(u"«Procurar séries» e «Adicionar outra pasta» sem pasta tremem o campo",
+           u"elTremer('el-pasta')" in varrer and u"uiVarrerLista(" in varrer
            and varrer.index(u"elTremer('el-pasta')")
-           < varrer.index(u"elPedir("))
+           < varrer.index(u"uiVarrerLista("))
     fundir = corpo(u"elFundir")
     checar(u"fixa igual à móvel treme a móvel", u"elTremer('el-movel')" in fundir)
     checar(u"as caixas de marcar ficam com o desenho da casca (nada aqui as "
@@ -2119,9 +2073,9 @@ def teste_dois_cartoes_e_nada_sozinho():
            and u"data-sozinho" not in p.split(u'id="el_escolha"')[1][:200])
     checar(u"reabrir a tela retoma a lista ou a busca, e NÃO varre a pasta favorita",
            u"function elRetomar" in js and not _abrir_le_sozinho(js))
-    isca = js.replace(u"elV=d.v; elBuscaMostrar(true); elBuscaContar(d); elBuscaSeguir() }",
-                      u"elV=d.v; elBuscaMostrar(true); elBuscaContar(d); elBuscaSeguir(); return }\n"
-                      u"    if(!(d.series||[]).length) elVarrer(false);")
+    isca = js.replace(u"elPedir('/api/elastic/lista').then(function(d){",
+                      u"elPedir('/api/elastic/lista').then(function(d){\n"
+                      u"    if(!(d.series||[]).length) elVarrer(false);", 1)
     checar(u"  (isca) com a varredura do ROOT de volta, é acusado",
            isca != js and _abrir_le_sozinho(isca))
     lib = _corpo_js(js, u"elLiberarFundir")
@@ -2190,9 +2144,9 @@ def main():
               teste_a_suite_conhece_o_modulo, teste_a_tela_monta,
               teste_o_cartao_nao_anuncia_obra_que_acabou,
               teste_a_lista_acumula_pastas,
-              teste_a_varredura_e_a_da_suite,
-              teste_as_rotas_de_pasta_executam,
-              teste_a_busca_mostra_o_que_acha_e_para,
+              teste_a_varredura_e_a_da_casca,
+              teste_a_rota_de_assentar_executa,
+              teste_a_busca_parada_guarda_o_que_achou,
               teste_o_ciclo_roda,
               teste_a_rm_nao_e_tc, teste_o_jacobiano_olha_a_direcao,
               teste_o_veredito_nao_inventa_compressao,

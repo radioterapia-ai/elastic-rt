@@ -203,8 +203,11 @@ def para_a_tela(pastas):
 
 MODALIDADES = ("CT", "MR", "PT")
 MIN_CORTES = 8
-TETO_PASTAS = 20000
-TETO_SERIES = 500
+USO_DA_VARREDURA = "series"
+
+
+def opcoes_da_varredura():
+    return {"modalidades": list(MODALIDADES), "min_cortes": MIN_CORTES}
 
 
 def _inteiro(x):
@@ -214,55 +217,53 @@ def _inteiro(x):
         return None
 
 
-def achada_de(linha):
-    uid = str(linha.get("uid") or u"")
-    return {"uid": uid, "pasta": linha.get("pasta") or u"",
-            "cortes": int(linha.get("cortes") or 0),
-            "numero": _inteiro(linha.get("numero")),
-            "espessura_mm": linha.get("espessura_mm"),
-            "date": str(linha.get("data") or u""),
-            "modalidade": str(linha.get("modalidade") or u""),
-            "curto": uid[-8:]}
+def achadas_da_varredura(linhas, resolver):
+    fora = []
+    for linha in linhas or ():
+        b = str(linha.get("bilhete") or u"")
+        pasta, uid = resolver(b) if b else (u"", u"")
+        uid = str(uid or linha.get("uid") or u"")
+        if not pasta or not uid:
+            continue
+        fora.append({"uid": uid, "pasta": pasta, "b": b,
+                     "cortes": int(linha.get("cortes") or 0),
+                     "numero": _inteiro(linha.get("numero")),
+                     "espessura_mm": linha.get("espessura_mm"),
+                     "date": str(linha.get("date") or linha.get("data") or u""),
+                     "modalidade": str(linha.get("modalidade") or u""),
+                     "curto": uid[-8:]})
+    return fora
 
 
-def achadas(v):
-    return [achada_de(s) for s in list(v.get("series") or ())]
+def assentar_varredura(pastas, pasta, estado_da_varredura, acumular, resolver):
+    d = estado_da_varredura or {}
+    pasta = str(pasta or u"").strip().strip('"')
+    if d.get("desconhecida"):
+        return list(pastas), [], BUSCA_DESCONHECIDA
+    if d.get("uso") != USO_DA_VARREDURA:
+        return list(pastas), [], BUSCA_DESCONHECIDA
+    if not d.get("fim"):
+        return list(pastas), [], BUSCA_AINDA_LENDO
+    if not pasta:
+        return list(pastas), [], ESCOLHA_A_PASTA
+    base = list(pastas) if acumular else []
+    if acumular:
+        ja = indice_de_pasta(base, pasta)
+        if ja:
+            return list(pastas), [], JA_NA_LISTA % ja
+    achadas = achadas_da_varredura(d.get("linhas") or (), resolver)
+    if d.get("erro") and not achadas:
+        return list(pastas), [], d["erro"]
+    por_uid = dict((a["uid"], a["b"]) for a in achadas)
+    lista, avisos = acumular_pasta(
+        base, pasta, achadas, lambda _p, uid: por_uid.get(uid) or u"")
+    return lista, avisos, None
 
 
-def nova_varredura(pasta, acumular):
-    import radai_dicom
-    v = radai_dicom.nova_busca()
-    v.update({"v": os.urandom(8).hex(), "pasta": str(pasta),
-              "acumular": bool(acumular), "fim": False, "assentada": False,
-              "erro": None, "avisos": []})
-    return v
-
-
-def varrer_pasta(v):
-    import radai_dicom
-    try:
-        raiz = radai_dicom.caminho_longo(v["pasta"])
-        if not os.path.isdir(raiz):
-            v["erro"] = PASTA_NAO_ENCONTRADA % v["pasta"]
-            return
-        radai_dicom.buscar_series(raiz, busca=v, modalidades=MODALIDADES,
-                                  min_cortes=MIN_CORTES,
-                                  teto_pastas=TETO_PASTAS,
-                                  teto_series=TETO_SERIES)
-    except Exception as e:
-        v["erro"] = u"%s: %s" % (type(e).__name__, e)
-
-
-def avisos_da_varredura(v):
-    import radai_dicom
-    return radai_dicom.avisos_da_busca(v)
-
-
-PASTA_NAO_ENCONTRADA = u"Pasta não encontrada: %s"
-SEM_ROOT = (u"A pasta dos exames ainda não foi configurada: escolha uma "
-            u"pasta com «Procurar…».")
 BUSCA_DESCONHECIDA = (u"Esta busca não existe mais — o programa pode ter "
                       u"sido reiniciado. Clique em «Procurar séries» de novo.")
+BUSCA_AINDA_LENDO = u"A leitura da pasta ainda não terminou."
+ESCOLHA_A_PASTA = u"Escolha a pasta que vai entrar na lista."
 
 
 SOMA = (u"&laquo;Procurar s&eacute;ries&raquo; substitui a lista; "
@@ -308,20 +309,11 @@ CSS = u"""
 .el-aviso-lin{border-left:3px solid var(--aviso);background:var(--fundo-2);
  padding:8px 12px;border-radius:0 8px 8px 0;font-size:12.5px;line-height:1.6;
  color:var(--txt-fraco)}
-.el-busca{display:flex;flex-direction:column;gap:7px}
-.el-busca[hidden]{display:none}
-.el-busca-barra{position:relative;height:4px;background:var(--fundo-2);
- border-radius:2px;overflow:hidden}
-.el-busca-barra i{position:absolute;top:0;bottom:0;left:0;width:30%;
- border-radius:2px;background:var(--mod-elastic);transform:translateX(-100%);
- animation:el-vai 1.4s cubic-bezier(.45,0,.55,1) infinite}
-@keyframes el-vai{from{transform:translateX(-100%)}to{transform:translateX(340%)}}
-@media (prefers-reduced-motion:reduce){.el-busca-barra i{animation:none;
- transform:none;width:100%;opacity:.45}}
-.el-busca-lin{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
- font-size:12px;color:var(--txt-fraco)}
-.el-busca-lin b{color:var(--txt);font-variant-numeric:tabular-nums}
-.el-busca-lin .el-bt2{margin-left:auto;padding:4px 11px;font-size:12px}
+.el-campo-l{display:flex;gap:6px;align-items:stretch}
+.el-campo-l input{flex:1 1 auto;min-width:0}
+.el-filtro{margin:0 0 10px}
+.el-lista[hidden]{display:none}
+.el-lista:empty{display:none}
 .el-falha{display:flex;flex-wrap:wrap;gap:10px;align-items:center;
  border-left:3px solid var(--perigo);background:var(--fundo-2);padding:8px 12px;
  border-radius:0 8px 8px 0;font-size:13px;line-height:1.5;color:var(--txt)}
@@ -391,8 +383,9 @@ CSS = u"""
  background:var(--fundo-2);color:var(--txt);cursor:pointer}
 .el-it:hover,.el-it[aria-selected="true"]{border-color:var(--mod-elastic)}
 .el-it:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-#el_escolha .el-topo,#el_escolha .el-legenda,#el_escolha .el-busca,
+#el_escolha .el-topo,#el_escolha .el-legenda,
 #el_escolha .el-pastas{margin-bottom:10px}
+#el_escolha .el-lista + .el-lista{margin-top:5px}
 .el-sujeitos{display:flex;align-items:flex-start;gap:9px;padding:9px 12px;
  border:1px solid var(--borda-aviso);border-radius:var(--r-lg,8px);
  background:var(--fundo-aviso);color:var(--text);font-size:12.5px;line-height:1.5}
@@ -404,7 +397,7 @@ CSS = u"""
 JS = u"""
 var elJ=null, elVista='xadrez', elZ=0, elNZ=1, elLaudo=null, elPronto=false;
 var elFundindo=false, elFusaoRelogio=null, elFalhasFusao=0;
-var elV=null, elBuscaRelogio=null, elFalhasBusca=0;
+var elVarre=null, elPedido=0, EL_PASTAS=[];
 var elDeNovo=null, elAssinatura='', elParVisto='', elParPedido=0;
 var EL_SEL={fixa:null, movel:null}, elLista=[], elTabela=null;
 var EL_TEMPO_MS=20000, EL_TEMPO_LONGO_MS=45000, EL_FALHAS_ATE_AVISAR=3;
@@ -459,19 +452,6 @@ function elTentarDeNovo(){
   var f = elDeNovo; elFalhaLimpar(); if(f) f();
 }
 
-function elBuscaMostrar(sim){
-  el('el-busca').hidden = !sim;
-  if(sim){
-    ['el-busca-pastas','el-busca-arqs','el-busca-series'].forEach(function(i){
-      el(i).textContent = '0' });
-  }
-}
-function elBuscaContar(d){
-  if(d.pastas_olhadas === undefined) return;
-  el('el-busca-pastas').textContent = String(d.pastas_olhadas || 0);
-  el('el-busca-arqs').textContent = String(d.arquivos || 0);
-  el('el-busca-series').textContent = String(d.series_achadas || 0);
-}
 function elTremer(id){
   var c = el(id); if(!c) return;
   var alvo = (c.closest && c.closest('.el-campo')) || c;
@@ -479,49 +459,65 @@ function elTremer(id){
   try{ c.scrollIntoView({block:'center'}) }catch(e){}
   try{ c.focus() }catch(e){}
 }
+function elNorm(p){
+  var b = String.fromCharCode(92);
+  var s = String(p || '').trim().split('/').join(b).toLowerCase();
+  while(s.length > 3 && s.charAt(s.length - 1) === b) s = s.slice(0, -1);
+  return s;
+}
+function elRotuloAchada(s, n){
+  var num = parseInt(s.numero, 10), esp = parseFloat(s.espessura_mm);
+  return '[' + n + '] série ' + (isNaN(num) ? '?' : num) + ' · '
+    + (parseInt(s.cortes, 10) || 0) + ' cortes · '
+    + ((esp > 0) ? esp.toFixed(2) + ' mm' : 'esp. ?') + ' · '
+    + (s.date || 'sem data') + ' · …' + String(s.uid || '').slice(-8);
+}
+function elMostrarLista(sim){
+  el('el-lista').hidden = !sim;
+  el('el-pastas').hidden = !sim;
+}
 function elVarrer(acumular){
-  if(acumular && !(el('el-pasta').value || '').trim()){
-    elErro('Escolha a pasta que vai entrar na lista.');
+  var pasta = (el('el-pasta').value || '').trim();
+  if(!pasta){
+    elErro(@ESCOLHA_A_PASTA_JS@);
     elTremer('el-pasta');
     return;
   }
   elErro(''); elFalhaLimpar();
-  if(elBuscaRelogio){ clearTimeout(elBuscaRelogio); elBuscaRelogio=null }
-  elV = null; elBuscaMostrar(true);
-  elPedir('/api/elastic/series', {pasta: el('el-pasta').value,
-                                  acumular: acumular ? true : false})
+  if(acumular){
+    var ja = 0;
+    EL_PASTAS.forEach(function(p){ if(!ja && elNorm(p.pasta) === elNorm(pasta)) ja = p.n });
+    if(ja){ elErro(window.uiMolde(@JA_NA_LISTA_JS@, [ja])); return }
+  }
+  if(!window.uiVarrerLista) return;
+  var pedido = ++elPedido, n = acumular ? EL_PASTAS.length + 1 : 1;
+  elMostrarLista(!!acumular);
+  elAvisosPintar([]);
+  elVarre = window.uiVarrerLista({alvo: 'el-lista-nova', estado: 'el-busca',
+    uso: @USO_JS@, chave: 'elastic', pasta: pasta, dias: 'el_dias',
+    opcoes: @OPCOES_JS@, vazio: 'Nenhuma série nesta pasta.',
+    linha: function(s){
+      return '<button type="button" class="el-it" role="option" data-b="'
+        + elEsc(s.bilhete) + '">' + elEsc(elRotuloAchada(s, n)) + '</button>';
+    },
+    aoFim: function(_linhas, d){
+      if(pedido === elPedido) elAssentar((d && d.v) || '', pasta, acumular, pedido);
+    },
+    aoErro: function(){ if(pedido === elPedido) elRetomar() }});
+  elMarcarLista();
+}
+function elAssentar(v, pasta, acumular, pedido){
+  elPedir('/api/elastic/assentar', {v: v, pasta: pasta, acumular: !!acumular})
    .then(function(d){
-    if(d.v){ elV = d.v; elFalhasBusca = 0; elPintar(d, true); elBuscaSeguir(); return }
-    elBuscaMostrar(false); elPintar(d, false);
+    if(pedido !== elPedido) return;
+    if(!d.erro && (d.series || []).length) el('el-lista-nova').innerHTML = '';
+    elMostrarLista(true);
+    elPintar(d, false);
    }).catch(function(e){
-    elBuscaMostrar(false); elFalha(e, function(){ elVarrer(acumular) });
+    if(pedido !== elPedido) return;
+    elMostrarLista(true);
+    elFalha(e, function(){ elAssentar(v, pasta, acumular, pedido) });
    });
-}
-function elBuscaSeguir(){
-  if(elBuscaRelogio){ clearTimeout(elBuscaRelogio); elBuscaRelogio=null }
-  if(!elV) return;
-  var meu = elV;
-  elPedir('/api/elastic/varredura?v=' + encodeURIComponent(meu)).then(function(d){
-    if(meu !== elV) return;
-    elFalhasBusca = 0;
-    elPintar(d, !!d.buscando);
-    if(d.buscando){ elBuscaRelogio = setTimeout(elBuscaSeguir, 700); return }
-    elV = null; elBuscaMostrar(false);
-  }).catch(function(e){
-    if(meu !== elV) return;
-    if(++elFalhasBusca < EL_FALHAS_ATE_AVISAR){
-      elBuscaRelogio = setTimeout(elBuscaSeguir, 1500); return }
-    elFalhasBusca = 0; elFalha(e, elBuscaSeguir);
-  });
-}
-function elPararBusca(){
-  if(!elV) return;
-  var meu = elV;
-  if(elBuscaRelogio){ clearTimeout(elBuscaRelogio); elBuscaRelogio=null }
-  elPedir('/api/elastic/parar_busca', {v: meu}).then(function(d){
-    if(meu !== elV) return;
-    elV = null; elBuscaMostrar(false); elPintar(d, false);
-  }).catch(function(e){ elFalha(e, elPararBusca) });
 }
 
 function elTirar(n){
@@ -532,6 +528,7 @@ function elTirar(n){
 
 function elPintar(d, buscando){
   if(d.series){
+    EL_PASTAS = d.pastas || [];
     var ass = JSON.stringify([d.pastas || [],
       d.series.map(function(s){ return s.b + '|' + s.rotulo })]);
     if(ass !== elAssinatura){
@@ -541,7 +538,6 @@ function elPintar(d, buscando){
     }
     elAvisosPintar(d.avisos || []);
   }
-  elBuscaContar(d);
   elLiberarFundir();
   if(d.erro) elErro(d.erro);
   else if(!buscando) elErro('');
@@ -581,7 +577,7 @@ function elEscolher(b, rotulo){
 }
 function elMarcarLista(){
   var p = elPopup(), qual = (p && p.contexto()) || 'movel', b = elB(qual);
-  Array.prototype.forEach.call(document.querySelectorAll('#el-lista .el-it'), function(x){
+  Array.prototype.forEach.call(document.querySelectorAll('#el-lista .el-it, #el-lista-nova .el-it'), function(x){
     x.setAttribute('aria-selected', x.getAttribute('data-b') === b ? 'true' : 'false');
   });
 }
@@ -875,18 +871,22 @@ function elSobreposicao(){
 }
 
 function elRetomar(){
-  elPedir('/api/elastic/varredura?v=').then(function(d){
-    elPintar(d, !!d.buscando);
-    if(d.buscando && d.v){
-      elV=d.v; elBuscaMostrar(true); elBuscaContar(d); elBuscaSeguir() }
-  }).catch(function(e){ elFalha(e, elRetomar) });
+  elPedir('/api/elastic/lista').then(function(d){
+    elMostrarLista(true);
+    elPintar(d, false);
+  }).catch(function(e){ elMostrarLista(true); elFalha(e, elRetomar) });
+}
+function elListaClique(ev){
+  var b = (ev.target && ev.target.closest) ? ev.target.closest('.el-it') : null;
+  if(b) elEscolher(b.getAttribute('data-b'), b.textContent);
 }
 
 document.addEventListener('DOMContentLoaded', function(){
   el('el-procurar').addEventListener('click', elProcurar);
   el('el-buscar').addEventListener('click', function(){ elVarrer(false) });
   el('el-mais').addEventListener('click', function(){ elVarrer(true) });
-  el('el-parar').addEventListener('click', elPararBusca);
+  el('el-pasta').addEventListener('keydown', function(ev){
+    if(ev.key === 'Enter'){ ev.preventDefault(); elVarrer(false) } });
   el('el-denovo').addEventListener('click', elTentarDeNovo);
   el('el-fundir').addEventListener('click', elFundir);
   el('el-img').addEventListener('error', elImagemFalhou);
@@ -896,10 +896,8 @@ document.addEventListener('DOMContentLoaded', function(){
   });
   el('el-z').addEventListener('input', function(){
     elZ=parseInt(this.value,10); elCorte() });
-  el('el-lista').addEventListener('click', function(ev){
-    var b = (ev.target && ev.target.closest) ? ev.target.closest('.el-it') : null;
-    if(b) elEscolher(b.getAttribute('data-b'), b.textContent);
-  });
+  el('el-lista').addEventListener('click', elListaClique);
+  el('el-lista-nova').addEventListener('click', elListaClique);
   elPopup();
   el('el-vgrade').addEventListener('change', elSobreposicao);
   el('el-vsetas').addEventListener('change', elSobreposicao);
@@ -997,31 +995,24 @@ PAGINA = u"""<!doctype html><html><head><meta charset="utf-8">
 
 PASTA_HTML = u"""<div class="el-topo">
   <div class="el-campo" style="flex:2">
-    <label>Pasta com as s&eacute;ries</label>
-    <input id="el-pasta" type="text" placeholder="deixe vazio para usar o ROOT configurado">
+    <label for="el-pasta">Pasta com as s&eacute;ries</label>
+    <div class="el-campo-l"><input id="el-pasta" type="text" spellcheck="false"
+      autocomplete="off" placeholder="cole o caminho da pasta, ou use o Procurar ao lado">@FAV@</div>
   </div>
   <button id="el-procurar" class="ui-bt" type="button">@ICO_PASTA@<span
     data-radai-frase>Procurar&hellip;</span></button>
   <button id="el-buscar" class="el-bt2" type="button">Procurar s&eacute;ries</button>
   <button id="el-mais" class="el-bt2" type="button">Adicionar outra pasta</button>
 </div>
+<div class="el-filtro">@FILTRO@</div>
 
 <div class="el-legenda">@SOMA@</div>
 
-<div class="el-busca" id="el-busca" role="status" hidden>
-  <div class="el-busca-barra" aria-hidden="true"><i></i></div>
-  <div class="el-busca-lin">
-    <span data-radai-frase>Procurando s&eacute;ries&hellip;</span>
-    <b id="el-busca-pastas">0</b><span data-radai-frase>pastas olhadas</span>&middot;
-    <b id="el-busca-arqs">0</b><span data-radai-frase>arquivos lidos</span>&middot;
-    <b id="el-busca-series">0</b><span data-radai-frase>s&eacute;ries achadas</span>
-    <button id="el-parar" class="el-bt2" type="button">Parar a busca</button>
-  </div>
-</div>
-
+<div class="ui-vl-est" id="el-busca" role="status" aria-live="polite"></div>
 <div class="el-pastas" id="el-pastas"></div>
 <div class="el-avisos" id="el-avisos"></div>
-<div class="el-lista" id="el-lista" role="listbox" aria-label="s&eacute;ries"></div>"""
+<div class="el-lista" id="el-lista" role="listbox" aria-label="s&eacute;ries"></div>
+<div class="el-lista" id="el-lista-nova" role="listbox" aria-label="s&eacute;ries"></div>"""
 
 CARTAO_MOVEL = u"Carregar imagem a ser deformada"
 CARTAO_FIXA = u"Carregar imagem de destino"
@@ -1030,10 +1021,12 @@ CARTAO_FIXA = u"Carregar imagem de destino"
 def _escolha():
     import radai_tabela_acervo
     import radai_ui
+    pasta = (PASTA_HTML.replace(u"@FAV@", radai_ui.botao_favorita(u"el-pasta"))
+             .replace(u"@FILTRO@", radai_ui.filtro_de_data(u"el_dias")))
     abas = radai_ui.abas_de_serie(
         u"el_origem",
         [(u"acervo", u"Acervo local", radai_tabela_acervo.html(u"el_acervo")),
-         (u"pasta", u"Aponte uma pasta", PASTA_HTML)],
+         (u"pasta", u"Aponte uma pasta", pasta)],
         cor_var=u"--mod-elastic")
     return radai_ui.popup_de_serie(u"el_escolha", abas)
 
@@ -1066,7 +1059,11 @@ def pagina():
                   .replace("@CARTOES@", _cartoes())
                   .replace("@JS@", JS.replace("@CARTAO_FIXA_JS@", json.dumps(CARTAO_FIXA, ensure_ascii=False))
                                      .replace("@CARTAO_MOVEL_JS@", json.dumps(CARTAO_MOVEL, ensure_ascii=False))
-                                     .replace("@SUJEITOS_LAUDO_JS@", json.dumps(SUJEITOS_NO_LAUDO, ensure_ascii=False)))
+                                     .replace("@SUJEITOS_LAUDO_JS@", json.dumps(SUJEITOS_NO_LAUDO, ensure_ascii=False))
+                                     .replace("@ESCOLHA_A_PASTA_JS@", json.dumps(ESCOLHA_A_PASTA, ensure_ascii=False))
+                                     .replace("@JA_NA_LISTA_JS@", json.dumps(JA_NA_LISTA, ensure_ascii=False))
+                                     .replace("@USO_JS@", json.dumps(USO_DA_VARREDURA))
+                                     .replace("@OPCOES_JS@", json.dumps(opcoes_da_varredura())))
                   .replace("@SUJEITOS@", SUJEITOS_DIFERENTES)
                   .replace("@ICO_PASTA@", radai_ui.icone(u"pasta"))
                   .replace("@VISTAS@", _vistas())
@@ -1293,107 +1290,36 @@ def montar(app):
     def _tela():
         return radai_menu.aplicar(pagina(), "elastic_fusao")
 
-    _V = {"atual": None}
-
-    def _assentar(v):
-        import radai_thumbnail
-        if v["assentada"]:
-            return
-        base = _P["lista"] if v["acumular"] else []
-        lista, avisos = acumular_pasta(base, v["pasta"], achadas(v),
-                                       radai_thumbnail.bilhete)
-        _P["lista"] = lista
-        v["avisos"] = avisos + avisos_da_varredura(v)
-        v["assentada"] = True
-
-    def _parar(v):
-        if v and not v["fim"] and not v["parado"]:
-            v["parado"] = True
-            _assentar(v)
-
-    def _buscando(v):
-        return bool(v) and not v["fim"] and not v["parado"] and not v["erro"]
-
-    def _resposta(v=None, erro=None):
-        import radai_thumbnail
+    def _lista(avisos=(), erro=None):
         with _TRAVA_P:
-            if v is not None and not v["assentada"] and not v["erro"]:
-                base = _P["lista"] if v["acumular"] else []
-                lista, avisos = acumular_pasta(
-                    base, v["pasta"], achadas(v),
-                    radai_thumbnail.bilhete)
-            else:
-                lista = _P["lista"]
-                avisos = list((v or {}).get("avisos") or [])
-            d = para_a_tela(lista)
-        d["avisos"] = avisos
-        if v is not None:
-            d.update(v=v["v"], buscando=_buscando(v),
-                     pastas_olhadas=int(v["pastas"]),
-                     arquivos=int(v["arquivos"]),
-                     series_achadas=len(v.get("series") or ()))
-            if v["erro"]:
-                d["erro"] = v["erro"]
+            d = para_a_tela(_P["lista"])
+        d["avisos"] = list(avisos or ())
         if erro:
             d["erro"] = erro
         return d
 
-    def _trabalhar_busca(v):
-        try:
-            varrer_pasta(v)
-        finally:
-            with _TRAVA_P:
-                if not v["parado"] and (not v["erro"] or v.get("series")):
-                    _assentar(v)
-                v["fim"] = True
-
-    @app.post("/api/elastic/series")
-    async def _series(request: Request):
+    @app.post("/api/elastic/assentar")
+    async def _assentar(request: Request):
         try:
             c = await request.json() or {}
-            import radai_config
-            pasta = str(c.get("pasta") or "").strip()
-            acumular = bool(c.get("acumular"))
-            if not pasta:
-                pasta = radai_config.root_configurado()
-            if not pasta:
-                return JSONResponse(_resposta(None, erro=SEM_ROOT))
+            import radai_thumbnail
+            import radai_varrer
+            v = str(c.get("v") or u"")
+            estado = radai_varrer.estado(v)
             with _TRAVA_P:
-                ja = indice_de_pasta(_P["lista"], pasta) if acumular else 0
-                if not ja:
-                    _parar(_V.get("atual"))
-                    v = nova_varredura(pasta, acumular)
-                    _V["atual"] = v
-            if ja:
-                return JSONResponse(_resposta(None, erro=JA_NA_LISTA % ja))
-            threading.Thread(target=_trabalhar_busca, args=(v,),
-                             daemon=True).start()
-            return JSONResponse(_resposta(v))
+                lista, avisos, erro = assentar_varredura(
+                    _P["lista"], c.get("pasta"), estado,
+                    bool(c.get("acumular")), radai_thumbnail.resolver)
+                if not erro:
+                    _P["lista"] = lista
+            return JSONResponse(_lista(avisos, erro))
         except Exception as e:
             return JSONResponse({"erro": u"%s: %s" % (type(e).__name__, e)})
 
-    @app.get("/api/elastic/varredura")
-    def _varredura(v: str = ""):
+    @app.get("/api/elastic/lista")
+    def _lista_guardada():
         try:
-            a = _V.get("atual")
-            if not v:
-                return JSONResponse(_resposta(a if _buscando(a) else None))
-            if not a or a["v"] != v:
-                return JSONResponse(_resposta(None, erro=BUSCA_DESCONHECIDA))
-            return JSONResponse(_resposta(a))
-        except Exception as e:
-            return JSONResponse({"erro": u"%s: %s" % (type(e).__name__, e)})
-
-    @app.post("/api/elastic/parar_busca")
-    async def _parar_busca(request: Request):
-        try:
-            c = await request.json() or {}
-            a = _V.get("atual")
-            if not a or a["v"] != str(c.get("v") or ""):
-                return JSONResponse(_resposta(None))
-            with _TRAVA_P:
-                _parar(a)
-            return JSONResponse(_resposta(a))
+            return JSONResponse(_lista())
         except Exception as e:
             return JSONResponse({"erro": u"%s: %s" % (type(e).__name__, e)})
 

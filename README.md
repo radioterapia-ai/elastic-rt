@@ -23,10 +23,12 @@ the evidence about the field behind it.
 - **Series**: CT, MR or PET. Nothing is read when the screen opens: two
   cards, *Load the image to be deformed* and *Load the target image*, each
   open the Suite's series pop‑up and pick one series, from the local archive
-  or from a folder you point to, searched folder by folder in the background,
-  with the series appearing as they are found. *Fuse* is enabled only with
-  both, and the fusion starts only on that click. It does not open `.zip`
-  files (it counts them and says so).
+  or from a folder you point to, read in the background by the Suite's
+  reader, with the series appearing as they are found, a filter by the date
+  of each series folder, the favourite folder's star and *Stop reading*; an
+  empty field asks for a folder instead of reading the whole watched folder.
+  *Fuse* is enabled only with both, and the fusion starts only on that
+  click. It does not open `.zip` files (it counts them and says so).
 - **Registration**: rigid first, then deformable, by a B‑spline — chosen
   because it *can* fold, so that the measurement has something to catch.
 - **Measurement of the field**, following AAPM TG‑132: the Jacobian
@@ -94,7 +96,8 @@ requirements and installation are in the Suite README.
 
 This repository has no build of its own. The Suite's packager
 (`build/empacotar_instalador.py --dos-repositorios`) downloads each component
-at the tag pinned in `build/componentes.lock.json`, checks its SHA‑256 and
+at the tag pinned in `build/componentes.lock.json`, checks the SHA‑256 of its
+extracted tree against the lock and
 assembles the installer — see *Build from source* in the Suite README.
 
 ## Running the batteries
@@ -128,6 +131,23 @@ none may be committed to it.**
    carries DICOM (with or without extension), a medical volume or a run
    log — and refuses it too when the scan cannot run, without the Suite
    beside this folder or without Python.
+
+## Reporting a problem
+
+A problem that is not a vulnerability goes through
+**[radioterapia.ai](https://radioterapia.ai)**. Include the Local Suite
+version, the Windows version, the screen language and the step that
+failed — and **never patient data**: no DICOM series, no screenshot of a
+patient image, no log with a patient ID, a UID or a series path. A problem
+reproduced with the synthetic phantoms of the batteries is the quickest to
+fix.
+
+## Security
+
+Found something that exposes patient data or lets the program act where it
+should not? **Do not report it in public.** Use GitHub's private
+vulnerability reporting on this repository, described in
+[SECURITY.md](SECURITY.md).
 
 ## Licence and name
 
