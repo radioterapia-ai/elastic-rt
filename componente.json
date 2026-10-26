@@ -3,7 +3,7 @@
   "nome": "ELASTIC_RT",
   "rotulo": "Elastic RT",
   "modulo_da_porta": "elastic",
-  "repositorio": "radioterapia-ai/elastic-rt",
+  "repositorio": "drhenriquebraga/elastic-rt",
   "app": [
     "radai_elastic.py",
     "radai_elastic_screen.py"

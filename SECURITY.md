@@ -18,7 +18,7 @@ phantoms the batteries build.
 
 The code in this repository: the deformable registration and its report. The
 installer, the updater and the shell shared by the six apps live in the
-[Local Suite](https://github.com/radioterapia-ai/local-suite) repository; a
+[Local Suite](https://github.com/drhenriquebraga/local-suite) repository; a
 finding there can be reported here or there. The findings that matter most:
 
 - Anything that writes the images, a deformed series or a structure anywhere,
